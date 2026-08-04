@@ -1,0 +1,604 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- Hosted publicly so the specialist can open it on her own devices, but
+         it is a clinical prototype rather than a product: keep it out of search
+         results. -->
+    <meta name="robots" content="noindex, nofollow" />
+    <!-- All visible text is injected from src/strings.ts (see CLAUDE.md:
+         user-facing text lives in resource files, never in markup). -->
+    <title></title>
+    <style>
+      :root {
+        --ink: #1a1a2e;
+        --paper: #f7f7fb;
+        --accent: #4f8a5b;
+        --accent-soft: #dcebe0;
+        --warn: #b0623a;
+        --muted: #6b6b80;
+      }
+      * { box-sizing: border-box; }
+      html, body { height: 100%; }
+      body {
+        margin: 0;
+        font-family: system-ui, -apple-system, sans-serif;
+        background: var(--paper);
+        color: var(--ink);
+      }
+      [hidden] { display: none !important; }
+
+      /* ---------------------------------------------------------------- setup */
+      #setup {
+        max-width: 34rem;
+        margin: 0 auto;
+        padding: 1.5rem 1.25rem 3rem;
+        display: flex;
+        flex-direction: column;
+        gap: 1.5rem;
+      }
+      #expired {
+        max-width: 30rem;
+        margin: 0 auto;
+        padding: 3rem 1.25rem;
+        display: flex;
+        flex-direction: column;
+        gap: 0.9rem;
+        align-items: flex-start;
+      }
+      #expired h1 { margin: 0; font-size: 1.35rem; }
+      #expired p { margin: 0; }
+
+      #setup h1 { margin: 0 0 0.25rem; font-size: 1.35rem; }
+      #setup .subtitle { margin: 0; color: var(--muted); font-size: 0.95rem; }
+      fieldset {
+        border: 1px solid #dcdce6;
+        border-radius: 0.6rem;
+        padding: 1rem;
+        margin: 0;
+        display: flex;
+        flex-direction: column;
+        gap: 0.8rem;
+      }
+      legend { padding: 0 0.4rem; font-weight: 600; font-size: 0.95rem; }
+      .row { display: flex; gap: 0.7rem; align-items: center; flex-wrap: wrap; }
+      .row > .grow { flex: 1; min-width: 8rem; }
+
+      button {
+        font: inherit;
+        padding: 0.55rem 1.1rem;
+        border-radius: 0.5rem;
+        border: 1px solid var(--ink);
+        background: white;
+        color: var(--ink);
+        cursor: pointer;
+      }
+      button.primary { background: var(--ink); color: white; }
+      button:disabled { opacity: 0.4; cursor: default; }
+      input[type='range'] { accent-color: var(--accent); }
+      input[type='file'] { display: none; }
+
+      .meters {
+        display: grid;
+        grid-template-columns: auto 1fr auto;
+        gap: 0.4rem 0.7rem;
+        align-items: center;
+        font-size: 0.88rem;
+      }
+      .bar {
+        height: 0.7rem;
+        background: #e3e3ec;
+        border-radius: 0.35rem;
+        overflow: hidden;
+        position: relative;
+      }
+      .bar > .fill {
+        height: 100%;
+        width: 0%;
+        background: var(--accent);
+        transition: width 60ms linear;
+      }
+      .bar.low > .fill { background: var(--warn); }
+      .bar .threshold {
+        position: absolute;
+        top: 0;
+        bottom: 0;
+        width: 2px;
+        background: var(--ink);
+        opacity: 0.55;
+        transition: left 100ms ease-out;
+      }
+      #f0 { min-width: 5rem; text-align: right; font-variant-numeric: tabular-nums; }
+      .hint { color: var(--muted); font-size: 0.85rem; margin: 0; }
+      .status { font-size: 0.9rem; color: var(--muted); }
+      .status.ok { color: var(--accent); }
+      .status.error { color: var(--warn); }
+
+      /* -------------------------------------------------------------- session */
+      /* The play surface. No instructions, no idle animation, nothing that
+         reacts to the child being silent — see docs/mission.md. */
+      #session {
+        position: fixed;
+        inset: 0;
+        background: #000;
+        display: flex;
+        flex-direction: column;
+      }
+      #stage { position: relative; flex: 1; min-height: 0; }
+      #stage > video {
+        position: absolute;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+        object-fit: contain;
+        background: #000;
+      }
+      /* The idle half of the double buffer. Kept in the layout rather than
+         `display: none` so the browser goes on decoding it — that preloading
+         is the entire point. It is paused, so it makes no sound. */
+      #stage > video.behind { visibility: hidden; }
+      /* Opaque by default: the screen gives nothing back between rewards. */
+      #curtain {
+        position: absolute;
+        inset: 0;
+        background: #000;
+        pointer-events: none;
+      }
+      #curtain.lifted { display: none; }
+      /* Adult strip. Deliberately plain and low-contrast: the adult needs it,
+         the child must not read it as a cue. */
+      #adult-bar {
+        display: flex;
+        align-items: center;
+        gap: 0.7rem;
+        padding: 0.5rem 0.8rem;
+        background: #101018;
+        color: #c9c9d4;
+        font-size: 0.85rem;
+        /* Fixed height, one line, and content that clips rather than wraps.
+           A bar that grows when a diagnostic appears or a counter fills
+           resizes the video the child is watching, mid-reward. The adult's
+           text must never move the child's picture. */
+        height: 3.25rem;
+        flex: none;
+        overflow: hidden;
+        flex-wrap: nowrap;
+        white-space: nowrap;
+      }
+      /* The items that must keep their size, whatever else is on the strip. */
+      #adult-bar > button,
+      #adult-bar #session-stage,
+      #adult-bar #session-sensitivity { flex: none; }
+      #adult-bar button {
+        background: transparent;
+        color: #c9c9d4;
+        border-color: #3a3a4a;
+        padding: 0.4rem 0.9rem;
+      }
+      #adult-bar button.primary { background: #2c4a33; border-color: #2c4a33; color: #eaf3ec; }
+      /* Hold-to-mute, sized to be hit without looking: full bar height and wide
+         enough for a thumb, because the gesture it replaces was rejected for
+         being slow, and a target that needs aiming would be no faster.
+
+         The three suppressions are what make a hold work under a finger rather
+         than a mouse. `touch-action: none` stops the browser claiming the
+         gesture as a scroll or zoom part-way through — which would fire
+         pointercancel and silently unmute. The other two stop Android's
+         long-press behaviours (text selection, the callout menu) appearing over
+         the child's video after ~500 ms of exactly the hold this button is for. */
+      #hold-mute {
+        flex: none;
+        align-self: stretch;
+        min-width: 8rem;
+        /* Negative margins cancel the bar's own padding so the target fills the
+           bar's full height and runs into the screen's left edge. Inside the
+           padding it came out 36 px tall, under the ~48 dp both platforms
+           recommend for touch; against the edge it is both taller and
+           unmissable, because a thumb can be driven into a corner without
+           aiming. That is the entire requirement here — the slider it
+           supplements was rejected for being slow, and a target needing aim
+           would be no better. */
+        margin: -0.5rem 0.3rem -0.5rem -0.8rem;
+        border-radius: 0 0.35rem 0.35rem 0;
+        touch-action: none;
+        user-select: none;
+        -webkit-user-select: none;
+        -webkit-touch-callout: none;
+        white-space: nowrap;
+      }
+      /* Held state carries on the button itself as well as in the bar colour:
+         the bar also turns for a slider mute, and the adult should be able to
+         tell which of the two is holding the app silent. */
+      #hold-mute.held {
+        background: #6b3f2a;
+        border-color: #6b3f2a;
+        color: #f4e2d8;
+      }
+      #session-count { font-variant-numeric: tabular-nums; }
+      #session-sensitivity { width: 7rem; accent-color: var(--accent); }
+      #session-sensitivity-label { font-size: 0.75rem; opacity: 0.7; }
+      /* "Not listening" has to be visible at a glance, because the whole point
+         of putting the mute on the slider is that its state is never a thing
+         the adult has to remember. */
+      #session-listening { font-size: 0.75rem; color: #d79a72; white-space: nowrap; }
+      #session-listening:empty { display: none; }
+      #setup-listening { font-size: 0.8rem; color: var(--warn); white-space: nowrap; }
+      #setup-listening:empty { display: none; }
+      #adult-bar.not-listening { background: #2a1d16; }
+      /* WHAT YIELDS WHEN THE BAR RUNS OUT OF ROOM, and it must not be the
+         controls. At stage 2 with four targets the bar wants ~1315 px; a 1024 px
+         landscape tablet cannot give it, and the bar clips rather than wraps
+         (see the height comment above) — so «Завершить» was disappearing off the
+         right edge with no way to reach it, which is how the session ends and
+         the summary appears. Measured 2026-08-03; it predates the hold button,
+         which made it ~128 px worse.
+
+         Diagnostics shrink and ellipsize; anything the adult has to press keeps
+         its full width. `#debug-readout` already had this treatment and keeps
+         it. */
+      #session-stage,
+      #session-position,
+      #session-listening {
+        flex: 0 1 auto;
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      /* «Засчитано: N» is not a diagnostic. It is the count the specialist reads
+         to judge whether the child responded more than usual — the PoC's exit
+         condition (docs/poc-plan.md, "Definition of done"), and the one number
+         the app deliberately keeps in memory instead of persisting. Truncating
+         it to «Зас…» loses exactly that, so it holds its width and the clip
+         falls on the stage badge and the clip position instead. */
+      #hold-mute,
+      #confirm,
+      #target-confirms,
+      #end-session,
+      #session-count,
+      #session-sensitivity,
+      #session-sensitivity-label {
+        flex: none;
+      }
+      /* Narrow enough that even with the diagnostics collapsed the controls do
+         not fit — a tablet held in portrait, at stage 2, where four confirm
+         buttons cost ~294 px on their own. The sensitivity label goes first:
+         the slider is self-evident beside it, and the hold button now covers
+         the urgent case the slider used to be needed for. Then the slider
+         itself narrows. Both are recoverable losses; «Завершить» being pushed
+         past the right edge is not, and that is what happens otherwise.
+         The slider keeps its accessible name from main.ts. */
+      @media (max-width: 900px) {
+        #session-sensitivity-label { display: none; }
+        #session-sensitivity { width: 5rem; }
+      }
+      #session-stage {
+        border: 1px solid #3a3a4a;
+        border-radius: 0.35rem;
+        padding: 0.15rem 0.45rem;
+        font-size: 0.75rem;
+        opacity: 0.8;
+        white-space: nowrap;
+      }
+      #session-position { opacity: 0.7; font-variant-numeric: tabular-nums; }
+
+      #video-list { margin: 0; padding-left: 1.4rem; font-size: 0.9rem; }
+      #video-list:empty { display: none; }
+      #video-list li { padding: 0.15rem 0; }
+      #video-list .name { margin-right: 0.4rem; }
+      #video-list .note { font-size: 0.85rem; }
+      #video-list .note.error { color: var(--warn); }
+      #video-list .note.ok { color: var(--accent); }
+      #video-list button {
+        border: none;
+        background: none;
+        color: var(--muted);
+        text-decoration: underline;
+        padding: 0 0.2rem;
+        font-size: 0.85rem;
+        cursor: pointer;
+      }
+      label.checkbox { display: flex; align-items: center; gap: 0.45rem; cursor: pointer; }
+      label.checkbox input { accent-color: var(--accent); width: 1rem; height: 1rem; }
+      #debug-readout {
+        margin-left: auto;
+        font-variant-numeric: tabular-nums;
+        opacity: 0.75;
+        font-size: 0.8rem;
+        text-align: right;
+        /* Takes whatever room is left and clips inside it, so text appearing
+           here can never push anything else around. */
+        flex: 1 1 auto;
+        min-width: 0;
+        max-height: 2.4rem;
+        overflow: hidden;
+        white-space: normal;
+      }
+
+      /* ------------------------------------------------------------- stage 2 */
+      /* Four reward windows, one per target sound. A fixed 2×2 grid rather than
+         a layout that reflows with the number of targets: the child learns
+         which position belongs to which sound, so a cell must not move when
+         another target is added. */
+      #grid {
+        flex: 1;
+        min-height: 0;
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        grid-template-rows: 1fr 1fr;
+        gap: 2px;
+        background: #000;
+        /* Positioned so a playing cell can escape its track and fill the area. */
+        position: relative;
+      }
+      #grid .cell { position: relative; background: #000; overflow: hidden; }
+      /* The reward fills the whole play area. The four windows exist to be
+         chosen between when idle, not to shrink what the child earned. */
+      #grid .cell.playing { position: absolute; inset: 0; z-index: 2; }
+      #grid .cell video {
+        position: absolute;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+        object-fit: contain;
+        background: #000;
+      }
+      #grid .cell-curtain { position: absolute; inset: 0; background: #000; pointer-events: none; }
+      #grid .cell-curtain.lifted { display: none; }
+      /* Never wraps. Wrapping made the strip two lines tall once the counters
+         filled, which changed the height of the area above it — the child's
+         video resizing because an adult-facing label got longer. */
+      #target-confirms { display: flex; gap: 0.6rem; flex-wrap: nowrap; align-items: center; }
+      /* Button plus its live enrolment counter. The counter is the adult's only
+         evidence that a press taught anything, so it sits against the button
+         rather than somewhere they have to go looking. */
+      .confirm-group { display: flex; align-items: center; gap: 0.35rem; }
+      .confirm-state {
+        font-size: 0.75rem;
+        opacity: 0.75;
+        font-variant-numeric: tabular-nums;
+        white-space: nowrap;
+      }
+      .confirm-state.ready { color: #7fc08e; opacity: 1; }
+
+      /* Target configuration rows on the setup screen. */
+      #target-rows { display: flex; flex-direction: column; gap: 0.5rem; }
+      .target-row { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; }
+      .target-row input[type='text'] {
+        font: inherit;
+        padding: 0.4rem 0.6rem;
+        border: 1px solid #dcdce6;
+        border-radius: 0.45rem;
+        width: 7rem;
+      }
+      .target-row select {
+        font: inherit;
+        padding: 0.4rem 0.5rem;
+        border: 1px solid #dcdce6;
+        border-radius: 0.45rem;
+        max-width: 12rem;
+      }
+      .target-row .state { font-size: 0.85rem; color: var(--muted); margin-left: auto; }
+      .target-row .state.ready { color: var(--accent); }
+      .target-row button {
+        border: none;
+        background: none;
+        color: var(--muted);
+        text-decoration: underline;
+        padding: 0 0.2rem;
+        font-size: 0.85rem;
+      }
+    </style>
+    <script type="module" crossorigin src="/chucha-poc/assets/index-D2vGrLOq.js"></script>
+  </head>
+  <body>
+    <!-- Shown instead of everything else once a pilot build has expired. -->
+    <main id="expired" hidden>
+      <h1 id="expired-title"></h1>
+      <p id="expired-body"></p>
+      <p class="hint" id="expired-contact"></p>
+      <button id="expired-clear"></button>
+      <p class="status" id="expired-cleared" hidden></p>
+    </main>
+
+    <!-- Setup: specialist-facing -->
+    <main id="setup">
+      <header>
+        <h1 id="setup-title"></h1>
+        <p class="subtitle" id="setup-subtitle"></p>
+      </header>
+
+      <p class="status" id="session-summary" hidden></p>
+
+      <fieldset>
+        <legend id="video-section"></legend>
+        <div class="row">
+          <input type="file" id="video-input" accept="video/*,audio/*" multiple />
+          <button id="pick-video"></button>
+          <button id="clear-videos" hidden></button>
+          <span class="status grow" id="video-status"></span>
+        </div>
+        <ol id="video-list"></ol>
+        <div class="row">
+          <!-- Checked by default: before there was a playlist, a single video
+               always restarted when it ran out, and a session where the reward
+               quietly stops working is a worse surprise than one that repeats.
+               The adult can turn it off. -->
+          <label class="checkbox">
+            <input type="checkbox" id="loop" checked />
+            <span id="loop-label"></span>
+          </label>
+        </div>
+        <p class="hint" id="loop-hint"></p>
+        <p class="status" id="storage-status"></p>
+        <div class="row">
+          <label class="grow" for="reward-seconds" id="reward-seconds-label"></label>
+          <input type="range" id="reward-seconds" min="2" max="15" value="5" />
+          <span id="reward-seconds-value"></span>
+        </div>
+      </fieldset>
+
+      <fieldset>
+        <legend id="mic-section"></legend>
+        <div class="row">
+          <button id="mic-toggle"></button>
+          <span class="status grow" id="mic-status"></span>
+        </div>
+        <div class="meters">
+          <span id="level-label"></span>
+          <div class="bar" id="level-bar"><div class="fill"></div><div class="threshold"></div></div>
+          <span></span>
+          <span id="clarity-label"></span>
+          <div class="bar" id="clarity-bar"><div class="fill"></div></div>
+          <span id="f0"></span>
+          <span id="spectrum-label"></span>
+          <div class="bar" id="spectrum-bar"><div class="fill"></div></div>
+          <span></span>
+        </div>
+        <div class="row">
+          <label class="grow" for="sensitivity" id="sensitivity-label"></label>
+          <input type="range" id="sensitivity" min="0" max="100" value="50" class="grow" />
+          <!-- The far-left end means "do not listen", here as well as during a
+               session — it is one setting. Said out loud so a session is never
+               started against a slider that looks merely low. -->
+          <span id="setup-listening"></span>
+        </div>
+        <p class="hint" id="mic-hint"></p>
+        <p class="status" id="heard-count"></p>
+      </fieldset>
+
+      <!-- Stage selection. The recognition mode is a property of the protocol
+           stage, not an app-wide setting (ADR 0004, domain.md). -->
+      <fieldset>
+        <legend id="stage-section"></legend>
+        <label class="checkbox">
+          <input type="radio" name="stage" id="stage-1" value="1" checked />
+          <span id="stage-1-label"></span>
+        </label>
+        <label class="checkbox">
+          <input type="radio" name="stage" id="stage-2" value="2" />
+          <span id="stage-2-label"></span>
+        </label>
+        <p class="status" id="engine-status" hidden></p>
+        <!-- Shown only after a failed attempt. Loading the models can fail for
+             reasons that are gone a second later, so there has to be a way to
+             try again without reloading. -->
+        <button id="engine-retry" hidden></button>
+      </fieldset>
+
+      <!-- Stage-2 targets. Rows are built by src/main.ts so the label inputs
+           and clip pickers stay in sync with the playlist. -->
+      <fieldset id="targets-section" hidden>
+        <legend id="targets-legend"></legend>
+        <p class="hint" id="targets-hint"></p>
+        <div id="target-rows"></div>
+        <div class="row">
+          <label class="checkbox">
+            <!--
+              On by default at the specialist's request (2026-08-03), after
+              testing the alternative. It was shipped off so both could be
+              tried in the room; four black windows give the child nothing to
+              learn the mapping from, and that turned out to matter more than
+              the risk of a still frame rewarding silence. Still a toggle —
+              this is the specialist's call to change back, not ours.
+            -->
+            <input type="checkbox" id="idle-frames" checked />
+            <span id="idle-frames-label"></span>
+          </label>
+        </div>
+        <p class="hint" id="idle-frames-hint"></p>
+      </fieldset>
+
+      <button class="primary" id="start-session" disabled></button>
+    </main>
+
+    <!-- Session: the play surface -->
+    <div id="session" hidden>
+      <div id="stage">
+      <!-- `preload` so playback starts quickly on the first reward. The frame
+           it decodes is deliberately NOT shown: see #curtain below.
+
+           TWO elements, used as a double buffer. Switching clips on a single
+           element means reassigning `src`, which tears down the media pipeline
+           and rebuilds it — an audible silence at every clip boundary. The
+           idle element decodes the next clip while this one plays, so a
+           boundary is a swap. See src/session.ts. -->
+      <video id="reward" playsinline preload="auto"></video>
+      <video id="reward-b" class="behind" playsinline preload="auto"></video>
+      <!--
+        Black cover over the video whenever a reward is not playing.
+
+        An earlier version left the paused frame on screen, on the reasoning
+        that a waiting cartoon builds anticipation. The specialist corrected
+        this (2026-07-26): for some children the still picture is *itself*
+        reinforcing, so leaving it up delivers a reward the child did not have
+        to make a sound for, and the contingency the protocol depends on comes
+        apart. Between rewards the screen must give nothing back.
+
+        A cover rather than hiding the video, so the decoder is never disturbed
+        mid-playback.
+      -->
+      <div id="curtain"></div>
+      </div>
+      <!--
+        Stage 2: four rewards at once, one per target sound. The child learns
+        by trial which sound opens which window (domain.md), so a cell's
+        position is fixed for the whole session.
+
+        Each cell carries its own curtain for the same reason the stage-1 one
+        exists — but whether idle cells show their first frame is a live
+        clinical question (four black squares are indistinguishable, a frozen
+        frame is itself reinforcing), so it is a setting rather than a
+        decision. See src/stage2.ts.
+      -->
+      <div id="grid" hidden>
+        <div class="cell">
+          <video playsinline preload="auto"></video>
+          <div class="cell-curtain"></div>
+        </div>
+        <div class="cell">
+          <video playsinline preload="auto"></video>
+          <div class="cell-curtain"></div>
+        </div>
+        <div class="cell">
+          <video playsinline preload="auto"></video>
+          <div class="cell-curtain"></div>
+        </div>
+        <div class="cell">
+          <video playsinline preload="auto"></video>
+          <div class="cell-curtain"></div>
+        </div>
+      </div>
+
+      <div id="adult-bar">
+        <!-- Hold to stop listening; release to resume. Deliberately at the
+             opposite end of the bar from «Завершить», because this one gets
+             grabbed fast and without looking, and a miss must not end the
+             session. -->
+        <button id="hold-mute"></button>
+        <!-- Which stage is running. Cheap, and it removes a whole class of
+             "the app is broken" that is really "the wrong mode started". -->
+        <span id="session-stage"></span>
+        <span id="session-count"></span>
+        <span id="session-position"></span>
+        <button class="primary" id="confirm"></button>
+        <!-- One confirm button per target at stage 2, built by main.ts: the
+             adult has to say *which* sound they are counting, and that press is
+             also the enrolment signal. -->
+        <span id="target-confirms"></span>
+        <!-- Sensitivity, reachable without ending the session — and the mute,
+             because its far-left end is "do not listen". One continuous
+             gesture rather than two taps, and the handle's position is the
+             state, so there is nothing to forget. Detection is all that stops:
+             the confirm buttons keep working, because an adult who has muted
+             is usually counting responses by hand. -->
+        <label id="session-sensitivity-label" for="session-sensitivity"></label>
+        <input type="range" id="session-sensitivity" min="0" max="100" value="50" />
+        <span id="session-listening"></span>
+        <button id="end-session"></button>
+        <span id="debug-readout"></span>
+      </div>
+    </div>
+
+  </body>
+</html>
