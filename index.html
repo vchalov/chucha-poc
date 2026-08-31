@@ -1,0 +1,1444 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <!-- `viewport-fit=cover` is here for one reason: it is what makes
+         `env(safe-area-inset-*)` report anything but zero. Under the default
+         `contain`, Safari pillarboxes the page away from the notch but leaves
+         its bottom edge under the home indicator, and the page has no way to
+         learn that — every inset reads 0. The adult strip sits on that edge, so
+         its lower band was being swallowed by the system before Safari saw it.
+         See `#session` for the measurements and what now pays the insets back. -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <!-- Hosted publicly so the specialist can open it on her own devices, but
+         it is a clinical prototype rather than a product: keep it out of search
+         results. -->
+    <meta name="robots" content="noindex, nofollow" />
+    <!-- All visible text is injected from src/strings.ts (see CLAUDE.md:
+         user-facing text lives in resource files, never in markup). -->
+    <title></title>
+    <style>
+      :root {
+        --ink: #1a1a2e;
+        --paper: #f7f7fb;
+        --accent: #4f8a5b;
+        --accent-soft: #dcebe0;
+        --warn: #b0623a;
+        --muted: #6b6b80;
+      }
+      * { box-sizing: border-box; }
+      html, body { height: 100%; }
+      body {
+        margin: 0;
+        font-family: system-ui, -apple-system, sans-serif;
+        background: var(--paper);
+        color: var(--ink);
+      }
+      [hidden] { display: none !important; }
+
+      /* ---------------------------------------------------------------- setup */
+      /* The two scrolling screens. Their side padding is `max()` against the
+         safe-area insets because `viewport-fit=cover` (see the meta tag) lets
+         the page run under the notch: in landscape those insets are 62 px, far
+         more than the 1.25rem this screen would otherwise sit on, and a label
+         that disappears under the Dynamic Island is unreadable rather than
+         merely tight. On every screen without insets `max()` returns the
+         original value, so nothing moves.
+
+         Sides only. The bottom inset is at most 34 px and these screens already
+         end on 3rem of it, so wrapping that in `max()` too would look like it
+         was doing something and never do it. */
+      #setup {
+        max-width: 34rem;
+        margin: 0 auto;
+        padding: 1.5rem max(1.25rem, env(safe-area-inset-right)) 3rem
+          max(1.25rem, env(safe-area-inset-left));
+        display: flex;
+        flex-direction: column;
+        gap: 1.5rem;
+      }
+      #expired {
+        max-width: 30rem;
+        margin: 0 auto;
+        padding: 3rem max(1.25rem, env(safe-area-inset-right)) 3rem
+          max(1.25rem, env(safe-area-inset-left));
+        display: flex;
+        flex-direction: column;
+        gap: 0.9rem;
+        align-items: flex-start;
+      }
+      #expired h1 { margin: 0; font-size: 1.35rem; }
+      #expired p { margin: 0; }
+
+      #setup h1 { margin: 0 0 0.25rem; font-size: 1.35rem; }
+      #setup .subtitle { margin: 0; color: var(--muted); font-size: 0.95rem; }
+      fieldset {
+        border: 1px solid #dcdce6;
+        border-radius: 0.6rem;
+        padding: 1rem;
+        margin: 0;
+        display: flex;
+        flex-direction: column;
+        gap: 0.8rem;
+      }
+      legend { padding: 0 0.4rem; font-weight: 600; font-size: 0.95rem; }
+      .row { display: flex; gap: 0.7rem; align-items: center; flex-wrap: wrap; }
+      .row > .grow { flex: 1; min-width: 8rem; }
+
+      button {
+        font: inherit;
+        padding: 0.55rem 1.1rem;
+        border-radius: 0.5rem;
+        border: 1px solid var(--ink);
+        background: white;
+        color: var(--ink);
+        cursor: pointer;
+      }
+      button.primary { background: var(--ink); color: white; }
+      button:disabled { opacity: 0.4; cursor: default; }
+      input[type='range'] { accent-color: var(--accent); }
+      input[type='file'] { display: none; }
+
+      .meters {
+        display: grid;
+        grid-template-columns: auto 1fr auto;
+        gap: 0.4rem 0.7rem;
+        align-items: center;
+        font-size: 0.88rem;
+      }
+      .bar {
+        height: 0.7rem;
+        background: #e3e3ec;
+        border-radius: 0.35rem;
+        overflow: hidden;
+        position: relative;
+      }
+      .bar > .fill {
+        height: 100%;
+        width: 0%;
+        background: var(--accent);
+        transition: width 60ms linear;
+      }
+      .bar.low > .fill { background: var(--warn); }
+      .bar .threshold {
+        position: absolute;
+        top: 0;
+        bottom: 0;
+        width: 2px;
+        background: var(--ink);
+        opacity: 0.55;
+        transition: left 100ms ease-out;
+      }
+      #f0 { min-width: 5rem; text-align: right; font-variant-numeric: tabular-nums; }
+      .hint { color: var(--muted); font-size: 0.85rem; margin: 0; }
+      /* The probe reports one line per clip length; without this they collapse. */
+      #probe-readout { white-space: pre-line; }
+      /* The device readout. Monospace so the padded label column lines up, but
+         `pre-wrap` rather than `pre` and wrapping allowed mid-token: the value
+         this block most often has to carry is a user-agent string, and the
+         alternative is a horizontally scrolling box on a phone. That would be
+         the one shape this block must not take — it is read by being
+         screenshotted, and a screenshot cannot capture what is scrolled out of
+         view. Alignment survives for every short row and is spent only on the
+         long one. */
+      #diagnostics-readout {
+        margin: 0;
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 0.75rem;
+        line-height: 1.5;
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+        color: var(--muted);
+      }
+      .status { font-size: 0.9rem; color: var(--muted); }
+      .status.ok { color: var(--accent); }
+      .status.error { color: var(--warn); }
+
+      /* -------------------------------------------------------------- session */
+      /* The play surface. No instructions, no idle animation, nothing that
+         reacts to the child being silent — see docs/mission.md. */
+      #session {
+        position: fixed;
+        inset: 0;
+        background: #000;
+        display: flex;
+        flex-direction: column;
+        /* KEEP THE STRIP OUT OF THE SYSTEM'S GESTURE BANDS. Reported on an
+           iPhone 14 Pro Max (2026-08-16): in landscape the confirm buttons are
+           fully visible but only their top part takes a press.
+
+           The cause is not the layout — it is that iOS takes the touch first.
+           A confirm button is 48 px tall and sits flush with the page's bottom
+           edge, and on a notched iPhone in landscape the bottom 20 px of the
+           page are the home indicator's. Presses that land there never reach
+           the page at all: instrumented on the device, a `pointerdown` bound to
+           this element does not fire for them, which is what rules out every
+           explanation inside CSS. That leaves the top 28 px of 48 pressable —
+           "only the top part", to the pixel.
+
+           So the session pays the insets back. Bottom clears the home
+           indicator; left and right clear the notch, which `viewport-fit=cover`
+           has just let the page slide under (see the meta tag). Top is
+           deliberately NOT paid: it reads 0 in a browser tab, and the only
+           thing up there is the child's video, which needs no touch.
+
+           Measured with `viewport-fit=cover` on iOS 26.5 (Simulator, iPhone 17,
+           2026-08-16), landscape: insets 0/62/20/62 (t/r/b/l), `innerWidth` 812
+           against 750 without `cover`. The child's picture pays for this in
+           width — but it is letterboxed already (`object-fit: contain`), so a
+           wider black margin costs nothing that a cut-off corner under the
+           notch would not cost more.
+
+           Two earlier attempts are worth not repeating, because both looked
+           right and neither was. `calc(100lvh - 100svh)` as padding cost iOS
+           26.5 40 px for nothing: it floated the strip above Safari's toolbar
+           with a black gap under it. `height: 100svh` was harmless there but
+           equally beside the point — Safari already sizes a fixed box to the
+           small viewport, so it changed no measurement in either orientation.
+           Neither touched the tap that goes missing, because neither cause was
+           the real one. */
+        padding: 0 env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+      }
+      #stage { position: relative; flex: 1; min-height: 0; }
+      #stage > video {
+        position: absolute;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+        object-fit: contain;
+        background: #000;
+      }
+      /* The idle half of the double buffer. Kept in the layout rather than
+         `display: none` so the browser goes on decoding it — that preloading
+         is the entire point. It is paused, so it makes no sound. */
+      #stage > video.behind { visibility: hidden; }
+      /* Opaque by default: the screen gives nothing back between rewards. */
+      #curtain {
+        position: absolute;
+        inset: 0;
+        background: #000;
+        pointer-events: none;
+      }
+      #curtain.lifted { display: none; }
+      /* Adult strip. Deliberately plain and low-contrast: the adult needs it,
+         the child must not read it as a cue. */
+      #adult-bar {
+        display: flex;
+        align-items: center;
+        gap: 0.7rem;
+        padding: 0.5rem 0.8rem;
+        background: #101018;
+        color: #c9c9d4;
+        font-size: 0.85rem;
+        /* THE HEIGHT IS THE RULE, NOT THE LINE COUNT. A bar that grows when a
+           diagnostic appears or a counter fills resizes the video the child is
+           watching, mid-reward — the adult's text must never move the child's
+           picture. At stage 2 below 1600 px the strip *is* two rows (see the
+           media query further down), and that is fine because the height is
+           still pinned by CSS rather than decided by the content: items may
+           move between rows, the video never moves. What stays forbidden is
+           `flex-wrap` with an auto height, which is the same bar reflowing
+           from one row to two the moment «0/5» becomes «авто», mid-reward. */
+        height: 3.25rem;
+        flex: none;
+        flex-wrap: nowrap;
+        white-space: nowrap;
+        /* A backstop, not a feature: at the one-row widths a long enough set of
+           target labels can still outrun the strip, and a «Завершить» that
+           cannot be reached at all ends nothing. `scrollbar-width: none` and its
+           WebKit twin stop a horizontal scrollbar claiming layout height on the
+           platforms that still draw one, so this cannot violate the rule above.
+           Nothing here is meant to be reached by scrolling. */
+        overflow-x: auto;
+        overflow-y: hidden;
+        scrollbar-width: none;
+      }
+      #adult-bar::-webkit-scrollbar { display: none; }
+      /* Row splitter, inert wherever the strip is a single row. */
+      #adult-bar-break,
+      #adult-bar-break-phone { display: none; }
+      /* The items that must keep their size, whatever else is on the strip. */
+      #adult-bar > button,
+      #adult-bar #session-stage,
+      #adult-bar #session-sensitivity { flex: none; }
+      #adult-bar button {
+        background: transparent;
+        color: #c9c9d4;
+        border-color: #3a3a4a;
+        padding: 0.4rem 0.9rem;
+      }
+      #adult-bar button.primary { background: #2c4a33; border-color: #2c4a33; color: #eaf3ec; }
+      /* Stage 1's single confirm, sized like stage 2's four: it is the button
+         that counts a response for that whole stage, so the ~48 dp argument
+         under `#target-confirms` applies to it word for word. It was left at
+         31 px when the others were raised, which put the one control stage 1
+         is worked through below the floor the rest of the strip now meets. */
+      #adult-bar #confirm {
+        align-self: stretch;
+        margin-block: -0.5rem;
+      }
+      /* The strip and the confirm group can both scroll now, and a tap inside a
+         scroll container is a tap the browser may sit on while it waits to see
+         whether a pan or a double-tap-zoom is starting. A swallowed or delayed
+         press is a response that goes uncounted — the one number the PoC exists
+         to produce.
+
+         `manipulation`, not the `none` that `#hold-mute` uses. Those two want
+         opposite things: the mute is a *hold*, which a scroll claim would
+         cancel outright, so it refuses every gesture. These are taps, and
+         refusing every gesture here would also refuse the drag that scrolls
+         four long labels back into view. `manipulation` delivers the tap
+         immediately and leaves the pan alone. */
+      #adult-bar #confirm,
+      #adult-bar #stop-reward,
+      #adult-bar #end-session,
+      .confirm-group button {
+        touch-action: manipulation;
+      }
+      /* Greyed rather than hidden. There is nothing to cancel between rewards,
+         and a control that comes and goes would move everything on the strip
+         with it — the one thing the fixed height forbids. It also says which
+         state the session is in without a word of its own. */
+      #adult-bar #stop-reward:disabled { opacity: 0.35; }
+      /* Hold-to-mute, sized to be hit without looking: full bar height and wide
+         enough for a thumb, because the gesture it replaces was rejected for
+         being slow, and a target that needs aiming would be no faster.
+
+         The three suppressions are what make a hold work under a finger rather
+         than a mouse. `touch-action: none` stops the browser claiming the
+         gesture as a scroll or zoom part-way through — which would fire
+         pointercancel and silently unmute. The other two stop Android's
+         long-press behaviours (text selection, the callout menu) appearing over
+         the child's video after ~500 ms of exactly the hold this button is for. */
+      #hold-mute {
+        flex: none;
+        align-self: stretch;
+        min-width: 8rem;
+        /* Negative margins cancel the bar's own padding so the target fills the
+           bar's full height and runs into the screen's left edge. Inside the
+           padding it came out 36 px tall, under the ~48 dp both platforms
+           recommend for touch; against the edge it is both taller and
+           unmissable, because a thumb can be driven into a corner without
+           aiming. That is the entire requirement here — the slider it
+           supplements was rejected for being slow, and a target needing aim
+           would be no better. */
+        margin: -0.5rem 0.3rem -0.5rem -0.8rem;
+        border-radius: 0 0.35rem 0.35rem 0;
+        touch-action: none;
+        user-select: none;
+        -webkit-user-select: none;
+        -webkit-touch-callout: none;
+        white-space: nowrap;
+      }
+      /* Held state carries on the button itself as well as in the bar colour:
+         the bar also turns for a slider mute, and the adult should be able to
+         tell which of the two is holding the app silent. */
+      #hold-mute.held {
+        background: #6b3f2a;
+        border-color: #6b3f2a;
+        color: #f4e2d8;
+      }
+      #session-count { font-variant-numeric: tabular-nums; }
+      #session-sensitivity { width: 7rem; accent-color: var(--accent); }
+      #session-sensitivity-label { font-size: 0.75rem; opacity: 0.7; }
+      /* "Not listening" has to be visible at a glance, because the whole point
+         of putting the mute on the slider is that its state is never a thing
+         the adult has to remember. */
+      #session-listening { font-size: 0.75rem; color: #d79a72; white-space: nowrap; }
+      #session-listening:empty { display: none; }
+      #setup-listening { font-size: 0.8rem; color: var(--warn); white-space: nowrap; }
+      #setup-listening:empty { display: none; }
+      #adult-bar.not-listening { background: #2a1d16; }
+      /* WHAT HAPPENS WHEN THE BAR RUNS OUT OF ROOM. It gets a second row — it
+         does not drop «Завершить», which is how a session ends and the summary
+         appears, and which sits last and so is the first thing an overflow
+         pushes out of reach.
+
+         Measured 2026-08-10, stage 2, four targets, against the widest the
+         strip's content gets during a session (every counter on «авто», the
+         count at three digits). One row needed ~1320 px then and needs ~1444 px
+         since «Отменить» joined the strip — a control is worth 107 px here, and
+         adding one is a layout change whatever else it is. The target display is
+         1920×1080, where it fits with 476 px to spare and always did. At
+         1024×768 it wanted 1288 px against 1024 and «Завершить» sat at x
+         1150..1253 — off the edge, with `overflow: hidden` and `nowrap` leaving
+         no way to scroll to it.
+
+         The 2026-08-04 attempt at this is worth reading as a warning. It tried
+         to make diagnostics yield, and recovered *nothing* at stage 2: of the
+         three things it made shrinkable, `#session-stage` never obeyed the rule
+         at all (`flex: none` below wins on specificity), and `#session-position`
+         and `#session-listening` are both empty on a stage-2 strip — main.ts
+         clears the clip position there. It was measured on a bar whose
+         diagnostics happened to hold text, so it appeared to buy room that a
+         real session never had. Its «~294 px for four confirm buttons» was
+         wrong when written, too: git shows the labels and the counters both
+         predate it unchanged, so the same four groups measured 578 px. The
+         lesson is not "shrink harder" — the diagnostics are worth ~120 px
+         between them and the deficit is 300 — it is that a strip carrying four
+         confirm buttons and their counters does not fit one row on a tablet,
+         and that a figure measured on a strip in the wrong state is worse than
+         no figure. Re-measure in the state a session will actually be in.
+
+         So: at stage 2, one row above 1600 px and two below, and nothing is
+         truncated at any width. The controls keep their wording and their full
+         width everywhere, which is what the earlier note was reaching for and
+         could not afford — the narrow strip pays in *readouts* instead, and
+         which ones it drops and where is under the media queries below. */
+      #session-stage,
+      #session-position,
+      #session-listening {
+        flex: 0 1 auto;
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      /* «Засчитано: N» is not a diagnostic. It is the count the specialist reads
+         to judge whether the child responded more than usual — the PoC's exit
+         condition (docs/poc-plan.md, "Definition of done"), and the one number
+         the app deliberately keeps in memory instead of persisting. Truncating
+         it to «Зас…» loses exactly that, so it holds its width and the clip
+         falls on the stage badge and the clip position instead. */
+      #hold-mute,
+      #confirm,
+      #stop-reward,
+      #target-confirms,
+      #end-session,
+      #session-count,
+      #session-sensitivity,
+      #session-sensitivity-label {
+        flex: none;
+      }
+      /* THE SECOND ROW, and who pays for it. A row costs the child ~50 px of
+         picture, so it is spent only where something actually needs it: on
+         `.stage-two`, which main.ts sets while the four-target screen is
+         running, and only below 1600 px. Stage 1 carries one video and two
+         buttons and has never come close to filling a row, so it keeps the
+         3.25rem strip at every width — an earlier cut of this keyed the query
+         on viewport alone and took 52 px off stage 1's play area at 1280 and
+         60 px at 768, for a second row that held one 31 px button.
+
+         1600 rather than the ~1444 the quiet strip measures, because the strip
+         is not always quiet. Hold the mute and «не слушает» appears beside the
+         count; at 1401 with four «Засчитать: мама» that alone pushed
+         «Завершить» 5 px past the right edge — the very failure this file
+         exists to prevent, reintroduced by a breakpoint set from a measurement
+         taken with the label empty. The one-row worst case measures 1548, so
+         1600 leaves room for a longer label than any measured here, and the
+         `overflow-x` backstop covers whatever is longer still.
+
+         It was 1500 against a worst case of ~1419 until «Отменить» was added
+         (2026-08-16), which cost 107 px and put the worst case 48 px the wrong
+         side of the old breakpoint: at 1501 with four-character labels
+         «Завершить» sat 47 px off the right edge. Both numbers moved together,
+         which is the thing to copy — a control added to this strip is a
+         breakpoint to re-measure, not just a button.
+
+         The rows are split deliberately rather than wherever the content
+         happens to break, and the confirm buttons own the lower one outright.
+         That is what the `order` values are for. It also means the lower row
+         can never wrap: `#target-confirms` is the only thing on it, and it is
+         `flex: 1 1 0` there, so it shrinks and scrolls inside itself instead of
+         being pushed onto a third line the fixed height would clip. Sharing
+         that row with the mute is what used to make it wrap — at 901 with
+         labels like «свисток» the confirm buttons dropped to a third line and
+         23 px of every one of them was cut off below the bar, with
+         `overflow-y: hidden` and no gesture to recover it.
+
+         So the mute sits on the upper row at every two-row width. It keeps the
+         screen's left edge and its full height and loses only the corner; that
+         is the one real sacrifice here, and it buys a confirm button that is
+         always whole. A control that is half cut off cannot be pressed at all.
+
+         `#adult-bar-break` is an empty full-width item that forces the split;
+         flex has no break-before. Note the cost of `order`: keyboard focus
+         still follows the markup, so tabbing reaches the lower row before the
+         upper one. With four focusable things on the strip that is a wrinkle,
+         not a trap.
+
+         Every override below is scoped with `#adult-bar.stage-two` on purpose,
+         which outranks the `> *` reset (2,1,0 against 1,1,0). They used to be
+         equal-specificity selectors separated only by source order, so sorting
+         the block or moving one declaration would have silently collapsed every
+         item back onto one row with nothing to show for it.
+
+         Verified 2026-08-16 at 768, 900, 901, 1000, 1001, 1024, 1280, 1600,
+         1601 and 1920, both stages, labels of one to four characters, counters
+         «0/5» and «авто», counts of one digit to three, and *both* mute states
+         — that last one is what an earlier pass missed. Within a stage the
+         height never moves as that content fills: 52 px at stage 1 everywhere,
+         52 px at stage 2 above 1600 and 112 below. «Завершить» and every
+         pressable control sits whole inside the bar in all of it, and the
+         readouts clip on an exact line boundary rather than showing a sliver.
+
+         Beyond the matrix: labels long enough to outrun the lower row (tested
+         with «Засчитать: паровозик едет» four times at 901) scroll inside
+         `#target-confirms` and stay whole and reachable — the height holds and
+         nothing is cut off. That is the backstop doing its job, not a supported
+         layout.
+
+         One residual, left alone. At 768 with four-character labels the
+         rightmost confirm button reaches under «Завершить», 17 px below it, so
+         a press that lands high ends the session. Giving the confirms the whole
+         lower row shortened this a long way — the buttons now start at the
+         screen edge instead of after the mute, so «с ш р л» and «сь ль шь рь»
+         clear it entirely and only word-length labels reach that far. The rest
+         is the width: both rows are full, and the only other place «Завершить»
+         could go is the left end of its row, directly over the mute, which is
+         the mis-aim this layout least wants. */
+      @media (max-width: 1600px) {
+        #adult-bar.stage-two {
+          flex-wrap: wrap;
+          /* Two 3rem rows plus the strip's own 0.5rem padding top and bottom,
+             to the pixel: 112 - 16 = 96 = 48 + 48. Fixed here and never by the
+             content, which is the whole of the rule at the top of this file. */
+          height: 7rem;
+          /* Diagnostics hug the top edge, confirms the bottom. Not `stretch`:
+             the splitter is itself a flex line, so stretch would hand a third
+             of the slack to a row that does not exist. */
+          align-content: space-between;
+          /* The bar's 0.7rem gap is a *column* gap here. Spending it between
+             the rows as well would cost more than the slack there is. */
+          row-gap: 0;
+        }
+        /* One order for the whole upper row, so markup order decides it. That
+           is load-bearing for «Завершить»: it must land at the far end, at the
+           opposite end of the strip from the mute, because mid-row it sits
+           directly above the confirm buttons with 9 px between them — a press
+           aimed at «Засчитать» and landing high would end the session, the
+           exact hazard the one-row layout spends the whole strip's width
+           avoiding. It is last in the markup, and this is why.
+
+           It used to need an `order: 2` of its own, back when the readouts sat
+           after it. They do not any more; the markup carries it now. */
+        #adult-bar.stage-two > * { order: 1; }
+        #adult-bar.stage-two #adult-bar-break {
+          display: block;
+          order: 3;
+          flex-basis: 100%;
+          height: 0;
+        }
+        /* The lower row, and nothing else on it. `flex: 1 1 0` is what keeps it
+           there: a basis of 0 is never wide enough to force a line break, so
+           four long labels overflow *inside* this box and scroll, instead of
+           wrapping the whole group onto a third row that the fixed height would
+           clip. The scrollbar is suppressed for the same reason as the bar's. */
+        #adult-bar.stage-two #target-confirms {
+          order: 4;
+          flex: 1 1 0;
+          min-width: 0;
+          overflow-x: auto;
+          /* Explicit, because a box with one axis `auto` and the other left at
+             `visible` computes the second to `auto` too — which would be a
+             vertical scrollbar inside a row sized to the pixel. */
+          overflow-y: hidden;
+          scrollbar-width: none;
+        }
+        #adult-bar.stage-two #target-confirms::-webkit-scrollbar { display: none; }
+        /* Sized here rather than left to `align-self: stretch`, which would
+           only fill a row that is as tall as its own tallest item — circular.
+           3rem clears the ~48 dp both platforms advise. The confirms bleed
+           downward into the bar's bottom padding so their row is flush with the
+           screen edge; the mute bleeds upward, because on the upper row the
+           downward half would run into the confirm buttons. */
+        #adult-bar.stage-two #target-confirms {
+          height: 3rem;
+          margin-block: 0 -0.5rem;
+        }
+        #adult-bar.stage-two #hold-mute {
+          height: 3rem;
+          margin-block: -0.5rem 0;
+        }
+        /* Three lines here, where a row is 3rem, against the two a 3.25rem
+           one-row strip can show. Same exact-multiple rule as the base — 3 ×
+           16 px — and it is the narrow widths that need it, because that is
+           where these are squeezed to ~100 px and were losing a third of every
+           figure off the bottom. It costs no height: the mute already sets this
+           row to 3rem. */
+        #adult-bar.stage-two #debug-readout,
+        #adult-bar.stage-two #match-readout {
+          max-height: 3rem;
+        }
+      }
+      /* A PHONE HELD UPRIGHT, where the two-row strip above becomes a three-row
+         one. Reported 2026-08-16 alongside the landscape fault and mistaken for
+         it: at stage 2 in portrait the confirm buttons sat behind Safari's own
+         bar. They were not behind anything — they had overflowed the strip.
+
+         The block above pins the height at 7rem for two rows, and that holds
+         only while the upper row *is* one row. At 402 px it is not: the
+         controls on it measure ~554 px with their gaps, so they take two lines,
+         the confirms are pushed to a third, and the third falls outside a box
+         whose height is fixed for two. Measured at 402 px: bar 602..714,
+         confirm buttons 682..730 — 16 px of every one of them below the strip,
+         with `overflow-y: hidden` and no gesture to recover it. On a phone
+         whose browser bar sits at the bottom that overflow lands under it,
+         which is what made it look like an occlusion.
+
+         MEASURE IT IN THE STATE A SESSION IS ACTUALLY IN — the warning in the
+         block above, which this breakpoint got wrong twice before it was right.
+         Natural height with `height: auto`, four targets, three-digit count:
+
+           quiet strip, readouts empty      127 px at 402, 96 px from 660
+           mute held («не слушает» shown)    127 px still at 680
+           readouts also carrying text      144 px at 402, 135 px at 480..640
+
+         The first row is the figure a casual test produces, and a breakpoint
+         built on it lands at 640 px with a height of 8rem — which overflows by
+         16 px on every common phone the moment the two readouts hold text, the
+         iPhone this was reported from included. The third row is the real worst
+         case.
+
+         So this rung drops the readouts (see the ladder below, which takes the
+         sensitivity label at 1000 and the stage badge at 900 for the same
+         reason) and the strip needs 127 px again. 8.5rem is 136: nine pixels of
+         slack over that, because every figure here was measured in a desktop
+         browser and system-ui does not have identical metrics on iOS. The
+         height stays pinned by CSS rather than decided by content, which is the
+         rule at the top of this file and not something this exception may bend.
+
+         Below ~340 px the upper row needs a third line (158 px) and this
+         overflows again. No supported device is that narrow — the narrowest
+         current iPhone is 375.
+
+         720 rather than the 688 where the strip stops needing the third line:
+         headroom, on the same reasoning as the 1600 above. The band it
+         over-provisions is 688..720 — 24 px of the child's picture — and no
+         device sits in it: iPhone SE landscape is 667, which is below 688 and
+         genuinely needs the taller strip, and iPad mini portrait is 744, which
+         is above 720 and does not.
+
+         Do not reach for the «96 px from 660» figure in the table above to
+         argue that band down. That row is the quiet strip with both readouts
+         empty; 688 is the same strip in the state this breakpoint is sized for.
+         They measure different things, and the smaller one is not the safe one.
+
+         MEASURE AGAINST THE STRIP'S WIDTH, NOT THE VIEWPORT'S, if this is ever
+         re-cut. `viewport-fit=cover` (see the meta tag) hands the page the full
+         screen and `#session` pays the insets back, so on a notched iPhone in
+         landscape the media query here sees 812 px while the strip inside it is
+         688 — 124 px narrower than the number that chose this rung. It does not
+         break today: measured at 688 with the worst-case content above, the
+         two-row strip holds at 112 px with nothing overflowing and «Завершить»
+         whole inside it. But it has 8 px in hand, so a control added to this
+         strip is a re-measurement at 688, not at 812.
+
+         Must stay AFTER the block above: same selector, same specificity, so
+         source order is the only thing that makes this win. */
+      @media (max-width: 720px) {
+        #adult-bar.stage-two { height: 8.5rem; }
+        /* WHICH ROW EACH CONTROL LANDS ON, decided here rather than by whatever
+           the widths happen to add up to.
+
+           The block above gives the confirms a row of their own and lets width
+           sort the rest, which is fine while the rest is one row. On a phone it
+           is two, and the one that ended up directly above the confirms was the
+           one carrying «Завершить» — 6 px between a button that ends the
+           session and the button the adult presses dozens of times a session,
+           without looking. That is the hazard the 1600 block spends its whole
+           width budget avoiding, reintroduced at the bottom of the ladder.
+
+           So the rows are assigned. «Завершить» goes up with the mute and
+           «Отменить» — the three that act on the session — and the readouts
+           take the middle row, which means a press aimed at «Засчитать» and
+           landing high hits «Засчитано: N» and does nothing at all. Measured at
+           402 px, and on iOS 26.5 as well as in a desktop browser: 44 px
+           between «Завершить» and the confirm buttons where there were 6, with
+           a row of unpressable text across the gap.
+
+           The mute keeps the left edge of the top row, so it is still a corner
+           grab, and «Завершить» is two controls away from it along that row —
+           the other adjacency this layout has always refused.
+
+           THE FLOOR IS 375 px AND IT IS EXACT. The top row is 128 + 96 + 103
+           for the three controls, two 0.7rem gaps and the bar's own 0.8rem
+           padding either side: 374. WebKit and Blink agree on all three
+           figures, so this is not a one-engine measurement — but one pixel is
+           not headroom, and 375 is the narrowest current iPhone. At 360 the row
+           wraps and the strip overflows its height by 11 px, which is the fault
+           this whole block exists to prevent, back again.
+
+           What makes that survivable is that nothing here varies at runtime:
+           «Не слушать», «Отменить» and «Завершить» are fixed strings in
+           strings.ts, and the target labels — the one thing an adult can make
+           longer — are on the bottom row, not this one. So the floor moves only
+           if someone rewords one of those three. Doing that is a
+           re-measurement, not a copy edit.
+
+           `order` and not markup, so the tab order is unchanged — the wrinkle
+           the 1600 block notes applies here too and is no worse. Each selector
+           carries `#adult-bar.stage-two` to outrank that block's `> *` reset
+           (2,1,0 against 1,1,0); the ones that only change a number rely on
+           source order as well, so this block must stay below it. */
+        #adult-bar.stage-two #hold-mute,
+        #adult-bar.stage-two #stop-reward,
+        #adult-bar.stage-two #end-session {
+          order: 1;
+        }
+        #adult-bar.stage-two #adult-bar-break-phone {
+          display: block;
+          order: 2;
+          flex-basis: 100%;
+          height: 0;
+        }
+        #adult-bar.stage-two #session-sensitivity-label,
+        #adult-bar.stage-two #session-sensitivity,
+        #adult-bar.stage-two #session-listening,
+        #adult-bar.stage-two #session-position,
+        #adult-bar.stage-two #session-stage,
+        #adult-bar.stage-two #session-count {
+          order: 3;
+        }
+        #adult-bar.stage-two #adult-bar-break { order: 4; }
+        #adult-bar.stage-two #target-confirms { order: 5; }
+      }
+      /* NARROW SCREENS PAY IN READOUTS, NEVER IN CONTROLS. Every button keeps
+         its wording and its full width at every width this app supports; what
+         goes is text the adult can do without, in the order it can be done
+         without, and each step is measured rather than guessed.
+
+         The measurements, taken 2026-08-16 in the widest state a session
+         reaches (four targets, «авто» on every counter, a three-digit count,
+         the mute held so «не слушает» is on the strip). They are the minimum
+         width at which «Завершить» is still whole and inside the bar:
+
+           label shown, badge shown   941 px
+           label dropped              791 px
+           badge dropped too          728 px
+
+         So the first two drops land at 1000 and 900 — each with room above the
+         figure it has to clear, rather than at the figure itself, because a
+         label one character longer than any measured here must not undo it.
+
+         768 px WAS the narrowest screen supported, and that is no longer what
+         this ladder is measured against. The bug reported on 2026-08-16 came
+         from a phone in portrait, where the strip is 375..430 px wide, so a
+         third rung was added at 720 and the figures above stop describing the
+         narrow end. Below 728 «Завершить» is not whole on one row at all: the
+         strip is two rows there and the width question becomes a height
+         question, which the phone-portrait block above owns. Read that block
+         for anything narrower than 728.
+
+         Nothing here touches the row structure: the confirm buttons already
+         have their own row at every two-row width. */
+      /* The sensitivity label goes first. The slider is self-evident beside it,
+         the hold button covers the urgent case the slider used to be needed
+         for, and the slider keeps its accessible name from main.ts — so this
+         costs a sighted adult nothing and a screen-reader user nothing. */
+      @media (max-width: 1000px) {
+        #session-sensitivity-label { display: none; }
+        #session-sensitivity { width: 5rem; }
+      }
+      /* Then the stage badge. It is the one readout on the strip that the play
+         surface behind it already answers: one video window is stage 1, four is
+         stage 2, and at stage 2 the four «Засчитать: …» buttons say it again.
+         It earns its place at the widths where it is free — it catches "the
+         wrong mode started", which reads as a broken app — and it is the
+         cheapest thing to lose where it is not.
+
+         Both stages, though only stage 1 is one row here: at stage 2 the upper
+         row clears 768 by 16 px with the badge and 81 px without, and 16 px is
+         not a margin, it is a coincidence. */
+      @media (max-width: 900px) {
+        #session-stage { display: none; }
+      }
+      /* And last, on a phone, the two development readouts. They are the only
+         things on the strip that are not for the adult at all — latency figures
+         and match distances, for the team, leaving with the PoC — so they are
+         the right thing to lose where the room has run out, and this is the
+         rung the ladder above was always going to reach.
+
+         It is not a nicety here. At stage 2 each of them can wrap to three
+         lines (`max-height: 3rem`), and that turns the strip's middle row from
+         31 px into 48 — 144 px in total against the 127 the same strip needs
+         without them. That is the difference between the phone-portrait height
+         above holding and overflowing; see it for the measurements.
+
+         The team does not lose the device questions these were added for:
+         `?diag=1` still answers them, and on a phone that block is easier to
+         screenshot than a 100 px column on the strip ever was.
+
+         Not scoped to `.stage-two`, unlike the height it exists to protect.
+         Stage 1 cannot overflow downward — one row, `nowrap`, and it scrolls
+         sideways instead — so the height argument does not reach it. It is
+         dropped there on the ladder's own rule instead: this is text the adult
+         can do without, at a width where the strip has run out of room.
+
+         Do not expect it to buy stage 1 any width back. Measured at 402 px,
+         stage 1 overruns by 326 px with these shown and 304 px with them
+         hidden — 22 px, because `flex: 1 1 0` and `min-width: 0` already shrink
+         them to almost nothing the moment the row overflows. Stage 1 on a phone
+         has a separate problem this does not touch: «Завершить» sits at x
+         590..693 against a 402 px screen, reachable only by dragging a strip
+         whose scrollbar is suppressed. */
+      @media (max-width: 720px) {
+        #debug-readout,
+        #match-readout {
+          display: none;
+        }
+      }
+      #session-stage {
+        border: 1px solid #3a3a4a;
+        border-radius: 0.35rem;
+        padding: 0.15rem 0.45rem;
+        font-size: 0.75rem;
+        opacity: 0.8;
+        white-space: nowrap;
+      }
+      #session-position { opacity: 0.7; font-variant-numeric: tabular-nums; }
+
+      /* ------------------------------------------------------------ previews */
+      /* A frame from the clip, wherever the adult has to tell one clip from
+         another: in the library list, and beside the target it is assigned to.
+         The name alone does not do it — reward files come off a phone and are
+         called «IMG_4823.MOV» — and at stage 2 a mis-assignment means a child
+         says their sound and gets the wrong cartoon.
+
+         Small on purpose. It is an identification aid on the adult's screen,
+         not a second player, and its whole job is done at a glance.
+
+         `contain` against black, matching both reward players: a portrait clip
+         then shows here as the same narrow slice it will show as on the tablet,
+         which is the warning in the list note made visible. */
+      .thumb {
+        flex: none;
+        width: 4.5rem;
+        aspect-ratio: 16 / 9;
+        padding: 0;
+        border: 1px solid #dcdce6;
+        border-radius: 0.35rem;
+        overflow: hidden;
+        background: #000;
+        cursor: pointer;
+      }
+      /* No frame could be taken. Grey rather than black, because a black box is
+         indistinguishable from a clip that genuinely opens on black. */
+      .thumb.no-frame { background: #e3e3ec; }
+      .thumb video {
+        display: block;
+        width: 100%;
+        height: 100%;
+        object-fit: contain;
+        /* Transparent so the box's own colour shows through the letterbox bars
+           and carries the no-frame state. */
+        background: transparent;
+      }
+
+      #video-list { margin: 0; padding-left: 0; list-style: none; font-size: 0.9rem; }
+      #video-list:empty { display: none; }
+      #video-list li {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        padding: 0.15rem 0;
+      }
+      /* The playlist position, which the session strip counts off as «Видео
+         3/5». It was the <ol> marker until the rows grew a thumbnail; a marker
+         sits against the row's first line rather than its middle, which reads
+         as belonging to the row above once a row is this tall. */
+      #video-list .index {
+        flex: none;
+        min-width: 1rem;
+        text-align: right;
+        color: var(--muted);
+        font-variant-numeric: tabular-nums;
+      }
+      /* Name over note. Side by side they made a row as wide as the file name
+         happened to be, and file names are the long half of this list. */
+      #video-list .lines { flex: 1; min-width: 0; }
+      #video-list .name { display: block; overflow-wrap: anywhere; }
+      #video-list .note { display: block; font-size: 0.85rem; }
+      #video-list .note.error { color: var(--warn); }
+      #video-list .note.ok { color: var(--accent); }
+      /* Named rather than `#video-list button`, which would outrank `.thumb` on
+         specificity and strip the preview of its frame. */
+      #video-list button.remove {
+        flex: none;
+        border: none;
+        background: none;
+        color: var(--muted);
+        text-decoration: underline;
+        padding: 0 0.2rem;
+        font-size: 0.85rem;
+        cursor: pointer;
+      }
+      label.checkbox { display: flex; align-items: center; gap: 0.45rem; cursor: pointer; }
+      label.checkbox input { accent-color: var(--accent); width: 1rem; height: 1rem; }
+      /* `#match-readout` shares this: both are tabular diagnostics that must
+         never push the controls around. */
+      #debug-readout,
+      #match-readout {
+        margin-left: auto;
+        font-variant-numeric: tabular-nums;
+        opacity: 0.75;
+        font-size: 0.8rem;
+        text-align: right;
+        /* Takes whatever room is left, and asks for none of its own — which is
+           what `flex: 1 1 auto` said but did not do. A basis of `auto` is the
+           item's content width, so a long line of numbers *was* a demand: it
+           squeezed `#debug-readout` to 59 px at 1920 and wrapped it into a
+           `max-height` that shows two lines, leaving the top sliver of a third
+           visible under them. It also decided line breaks once the bar could
+           wrap, costing a whole row. A basis of 0 asks for nothing and grows
+           into the slack, which is what the sentence above always meant.
+
+           Two lines, and the clip is exact: `line-height` is pinned so that
+           `max-height` is precisely 2 × 16 px. The old 2.4rem was 2.02 lines
+           against an unpinned line height, which is where the sliver came from.
+           One ellipsized line was tried instead and was worse — at 768 each
+           readout gets ~106 px against the ~206 px it wants, so half of every
+           figure went behind an ellipsis with no way to reach it. Two lines
+           show it whole at that width and still fit any row this bar has.
+
+           `#match-readout` used to claim `flex-basis: 100%` to take a line of
+           its own, so the two readings could not be mistaken for one. That is
+           not reachable here: a line of its own is a third row, and the row
+           count is what the bar's fixed height forbids. The gap and the
+           separate boxes carry that distinction instead. */
+        flex: 1 1 0;
+        min-width: 0;
+        line-height: 1.25;
+        max-height: 2rem;
+        overflow: hidden;
+        white-space: normal;
+      }
+
+      /* ------------------------------------------------------------- stage 2 */
+      /* Four reward windows, one per target sound. A fixed 2×2 grid rather than
+         a layout that reflows with the number of targets: the child learns
+         which position belongs to which sound, so a cell must not move when
+         another target is added. */
+      #grid {
+        flex: 1;
+        min-height: 0;
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        grid-template-rows: 1fr 1fr;
+        gap: 2px;
+        background: #000;
+        /* Positioned so a playing cell can escape its track and fill the area. */
+        position: relative;
+      }
+      #grid .cell { position: relative; background: #000; overflow: hidden; }
+      /* The reward fills the whole play area. The four windows exist to be
+         chosen between when idle, not to shrink what the child earned. */
+      #grid .cell.playing { position: absolute; inset: 0; z-index: 2; }
+      #grid .cell video {
+        position: absolute;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+        object-fit: contain;
+        background: #000;
+      }
+      #grid .cell-curtain { position: absolute; inset: 0; background: #000; pointer-events: none; }
+      #grid .cell-curtain.lifted { display: none; }
+      /* The four confirms stay on one row as a group, whatever the bar does
+         around them. Letting *these* wrap was the original sin: the strip went
+         two lines tall the moment the counters filled, which changed the height
+         of the area above it — the child's video resizing because an
+         adult-facing label got longer. The bar's own second row is safe because
+         a media query fixes its height in advance; a group that wraps on its
+         own content is not, and that is the distinction to keep.
+
+         Stretched to the row's full height, by the same negative margins and
+         for the same reason as `#hold-mute`: these four are the other control
+         the adult works blind, and inside the bar's padding they were 36 px
+         tall — under the ~48 dp both platforms advise. */
+      #target-confirms {
+        display: flex;
+        gap: 0.6rem;
+        flex-wrap: nowrap;
+        align-self: stretch;
+        align-items: stretch;
+        margin: -0.5rem 0;
+      }
+      /* Button plus its live enrolment counter. The counter is the adult's only
+         evidence that a press taught anything, so it sits against the button
+         rather than somewhere they have to go looking. */
+      .confirm-group { display: flex; align-items: stretch; gap: 0.35rem; }
+      .confirm-state {
+        /* Centred against a button that is now taller than this text. */
+        align-self: center;
+        font-size: 0.75rem;
+        opacity: 0.75;
+        font-variant-numeric: tabular-nums;
+        white-space: nowrap;
+      }
+      .confirm-state.ready { color: #7fc08e; opacity: 1; }
+
+      /* Target configuration rows on the setup screen. */
+      #target-rows { display: flex; flex-direction: column; gap: 0.5rem; }
+      .target-row { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; }
+      .target-row input[type='text'] {
+        font: inherit;
+        padding: 0.4rem 0.6rem;
+        border: 1px solid #dcdce6;
+        border-radius: 0.45rem;
+        width: 7rem;
+      }
+      .target-row select {
+        font: inherit;
+        padding: 0.4rem 0.5rem;
+        border: 1px solid #dcdce6;
+        border-radius: 0.45rem;
+        /* 12rem until the preview arrived beside it. The row wraps at 470 px of
+           content, and the label, the chooser, the preview and «вручную (0/5)»
+           came to 491 — a second line in the state every row is in for most of
+           a session. The 2rem comes off the file name because the file name is
+           the part that no longer has to carry the identification on its own;
+           the frame beside it does. The long state — «распознаётся
+           автоматически» — still wraps, as it did before any of this. */
+        max-width: 10rem;
+      }
+      .target-row .state { font-size: 0.85rem; color: var(--muted); margin-left: auto; }
+      .target-row .state.ready { color: var(--accent); }
+      /* Named for the same reason as the list's remove button: an unqualified
+         `.target-row button` also matches the preview and would flatten it. */
+      .target-row button.forget {
+        border: none;
+        background: none;
+        color: var(--muted);
+        text-decoration: underline;
+        padding: 0 0.2rem;
+        font-size: 0.85rem;
+      }
+    </style>
+    <script type="module" crossorigin src="/chucha-poc/assets/index-mQok83O4.js"></script>
+  </head>
+  <body>
+    <!-- Shown instead of everything else once a pilot build has expired. -->
+    <main id="expired" hidden>
+      <h1 id="expired-title"></h1>
+      <p id="expired-body"></p>
+      <p class="hint" id="expired-contact"></p>
+      <button id="expired-clear"></button>
+      <p class="status" id="expired-cleared" hidden></p>
+    </main>
+
+    <!-- Setup: specialist-facing -->
+    <main id="setup">
+      <header>
+        <h1 id="setup-title"></h1>
+        <p class="subtitle" id="setup-subtitle"></p>
+      </header>
+
+      <p class="status" id="session-summary" hidden></p>
+
+      <!--
+        The technical journal for the session that just ended.
+
+        Below the summary and never instead of it: the count is what the
+        specialist reads, and an upload she does not have to think about must
+        not push it off the top of the screen. On the ordinary path this line
+        says the journal was sent and gives a short code; the two buttons appear
+        only when there is something for her to do.
+      -->
+      <p class="status" id="diagnostics-status" hidden></p>
+      <div class="row" id="diagnostics-actions" hidden>
+        <button id="diagnostics-retry" hidden></button>
+        <button id="diagnostics-download" hidden></button>
+      </div>
+
+      <fieldset>
+        <legend id="video-section"></legend>
+        <div class="row">
+          <input type="file" id="video-input" accept="video/*,audio/*" multiple />
+          <button id="pick-video"></button>
+          <button id="clear-videos" hidden></button>
+          <span class="status grow" id="video-status"></span>
+        </div>
+        <ol id="video-list"></ol>
+        <div class="row">
+          <!-- Checked by default: before there was a playlist, a single video
+               always restarted when it ran out, and a session where the reward
+               quietly stops working is a worse surprise than one that repeats.
+               The adult can turn it off. -->
+          <label class="checkbox">
+            <input type="checkbox" id="loop" checked />
+            <span id="loop-label"></span>
+          </label>
+        </div>
+        <p class="hint" id="loop-hint"></p>
+        <p class="status" id="storage-status"></p>
+        <div class="row">
+          <label class="grow" for="reward-seconds" id="reward-seconds-label"></label>
+          <input type="range" id="reward-seconds" min="2" max="15" value="5" />
+          <span id="reward-seconds-value"></span>
+        </div>
+      </fieldset>
+
+      <fieldset>
+        <legend id="mic-section"></legend>
+        <div class="row">
+          <button id="mic-toggle"></button>
+          <span class="status grow" id="mic-status"></span>
+        </div>
+        <div class="meters">
+          <span id="level-label"></span>
+          <div class="bar" id="level-bar"><div class="fill"></div><div class="threshold"></div></div>
+          <span></span>
+          <span id="clarity-label"></span>
+          <div class="bar" id="clarity-bar"><div class="fill"></div></div>
+          <span id="f0"></span>
+          <span id="spectrum-label"></span>
+          <div class="bar" id="spectrum-bar"><div class="fill"></div></div>
+          <span></span>
+        </div>
+        <div class="row">
+          <label class="grow" for="sensitivity" id="sensitivity-label"></label>
+          <input type="range" id="sensitivity" min="0" max="100" value="50" class="grow" />
+          <!-- The far-left end means "do not listen", here as well as during a
+               session — it is one setting. Said out loud so a session is never
+               started against a slider that looks merely low. -->
+          <span id="setup-listening"></span>
+        </div>
+        <p class="hint" id="mic-hint"></p>
+        <p class="status" id="heard-count"></p>
+      </fieldset>
+
+      <!-- Stage selection. The recognition mode is a property of the protocol
+           stage, not an app-wide setting (ADR 0004, domain.md). -->
+      <fieldset>
+        <legend id="stage-section"></legend>
+        <label class="checkbox">
+          <input type="radio" name="stage" id="stage-1" value="1" checked />
+          <span id="stage-1-label"></span>
+        </label>
+        <label class="checkbox">
+          <input type="radio" name="stage" id="stage-2" value="2" />
+          <span id="stage-2-label"></span>
+        </label>
+        <p class="status" id="engine-status" hidden></p>
+        <!-- Shown only after a failed attempt. Loading the models can fail for
+             reasons that are gone a second later, so there has to be a way to
+             try again without reloading. -->
+        <button id="engine-retry" hidden></button>
+      </fieldset>
+
+      <!--
+        The phrase-route latency probe. Development instrumentation with a
+        shorter life than anything else on this screen: it answers whether this
+        device can run phrase targets at all (docs/poc-plan.md, "Phrase
+        targets", step 3), and if the answer is no it leaves along with the
+        route.
+
+        Deliberately separate from the stage fieldset and from the session
+        controls. Nothing here affects a session, the 225 MB download starts
+        only when the button is pressed, and a device that never touches it
+        downloads nothing — which is the whole reason this is a button rather
+        than something the page does on load.
+      -->
+      <fieldset id="probe-section" hidden>
+        <legend id="probe-legend"></legend>
+        <p class="hint" id="probe-hint"></p>
+        <div class="row">
+          <button id="probe-download"></button>
+          <button id="probe-measure" disabled></button>
+          <!-- Runs for about a minute at session cadence, so warming up is
+               visible. A three-second burst cannot see thermal throttling,
+               which is the failure that would pass a benchmark and then ruin
+               the second half of a session. -->
+          <button id="probe-sustained" disabled></button>
+        </div>
+        <p class="status" id="probe-status" hidden></p>
+        <p class="hint" id="probe-readout"></p>
+      </fieldset>
+
+      <!--
+        What this device is, behind `?diag=1` and off by default. Same register
+        and the same audience as the probe above: development instrumentation
+        the team reads, kept off the screen the specialist works on.
+
+        It exists because the two questions it answers both came from a phone,
+        and on a phone the console they would otherwise print to needs a Mac and
+        Web Inspector. See src/diagnostics.ts.
+      -->
+      <fieldset id="diagnostics-section" hidden>
+        <legend id="diagnostics-legend"></legend>
+        <p class="hint" id="diagnostics-hint"></p>
+        <pre id="diagnostics-readout"></pre>
+        <div class="row">
+          <button id="diagnostics-copy"></button>
+          <span class="status" id="diagnostics-copied"></span>
+        </div>
+      </fieldset>
+
+      <!-- Stage-2 targets. Rows are built by src/main.ts so the label inputs
+           and clip pickers stay in sync with the playlist. -->
+      <fieldset id="targets-section" hidden>
+        <legend id="targets-legend"></legend>
+        <p class="hint" id="targets-hint"></p>
+        <!--
+          What came back from the last session, and the way out of it.
+
+          ADR 0009 permits keeping the setup on the device and requires that a
+          restored reference is never restored in silence: one tablet in a
+          clinic sees several children, and matching one child's sound against
+          another child's reference would play the wrong reward. So the line
+          says what was restored and the button starts over.
+        -->
+        <p class="hint" id="calibration-restored" hidden>
+          <span id="calibration-restored-text"></span>
+          <button type="button" id="calibration-reset"></button>
+        </p>
+        <div id="target-rows"></div>
+        <!--
+          How an utterance is represented for matching. Present because which
+          one suits phrase-length targets is an open question that only a real
+          voice can settle (docs/onnx-russian-phrase-recognition.md), and the
+          only way to compare them is to switch between them in the room.
+
+          Not a product control. It is here to be measured with, and it should
+          leave with the PoC unless the comparison says one mode should be
+          chosen per target — which would be a decision with an ADR, not a
+          toggle.
+        -->
+        <div class="row">
+          <label for="match-mode" id="match-mode-label"></label>
+          <select id="match-mode">
+            <option value="pooled"></option>
+            <option value="sequence"></option>
+            <!-- A different tier, not a third representation: alignment against
+                 the written target, with no confirmations to collect. Costs a
+                 225 MB model, fetched only when this is selected. -->
+            <option value="phrase"></option>
+          </select>
+        </div>
+        <p class="hint" id="match-mode-hint"></p>
+        <!--
+          Where phrase recognition runs, for the Phase-0 server experiment.
+
+          Present only on a build given a gateway URL, and only while phrase
+          matching is selected. It is a *selector* rather than a button because
+          the choice configures every attempt in the next session rather than
+          performing one action (docs/poc-plan.md, "Specialist-facing flow").
+
+          No visible text lives here: src/main.ts fills every label from
+          strings.ts, as everywhere else on this page.
+        -->
+        <div id="phrase-location" hidden>
+          <p class="hint" id="phrase-location-legend"></p>
+          <div class="row">
+            <label class="checkbox">
+              <input type="radio" name="phrase-location" id="location-device" />
+              <span id="location-device-label"></span>
+            </label>
+          </div>
+          <p class="hint" id="location-device-hint"></p>
+          <div class="row">
+            <label class="checkbox">
+              <input type="radio" name="phrase-location" id="location-server" />
+              <span id="location-server-label"></span>
+            </label>
+          </div>
+          <p class="hint" id="location-server-hint"></p>
+          <p class="status" id="server-status" hidden></p>
+          <!-- Recovery without support contact: warm-up can fail for reasons
+               that are gone a second later, and the adult always has the device
+               route as an explicit alternative. -->
+          <button id="server-retry" hidden></button>
+        </div>
+        <!--
+          How much closer the winner has to be than the next-best target before
+          the app counts it itself. This is the gate aimed at two targets being
+          mistaken for each other — the «би»/«ме» case in docs/detection.md,
+          2026-08-08 — and raising it trades wrong rewards for questions to the
+          adult rather than making the two sounds distinguishable.
+
+          Moving it does NOT reset the collected examples: it is read when
+          scoring, not when enrolling. Development control; leaves with the PoC.
+        -->
+        <div class="row">
+          <label for="margin-ratio" id="margin-ratio-label"></label>
+          <input type="range" id="margin-ratio" min="1" max="3" step="0.1" value="1.3" />
+          <span id="margin-ratio-value"></span>
+        </div>
+        <p class="hint" id="margin-ratio-hint"></p>
+        <div class="row">
+          <label class="checkbox">
+            <!--
+              On by default at the specialist's request (2026-08-03), after
+              testing the alternative. It was shipped off so both could be
+              tried in the room; four black windows give the child nothing to
+              learn the mapping from, and that turned out to matter more than
+              the risk of a still frame rewarding silence. Still a toggle —
+              this is the specialist's call to change back, not ours.
+            -->
+            <input type="checkbox" id="idle-frames" checked />
+            <span id="idle-frames-label"></span>
+          </label>
+        </div>
+        <p class="hint" id="idle-frames-hint"></p>
+        <div class="row">
+          <label class="checkbox">
+            <!--
+              Off by default: most children in scope cannot read, and the
+              labels are the fastest way for the adult to tell four buttons
+              apart. It is on for the children who can — see maskLabel in
+              src/targets.ts for what it leaves behind and why two characters.
+            -->
+            <input type="checkbox" id="hide-labels" />
+            <span id="hide-labels-label"></span>
+          </label>
+        </div>
+        <p class="hint" id="hide-labels-hint"></p>
+      </fieldset>
+
+      <button class="primary" id="start-session" disabled></button>
+    </main>
+
+    <!-- Session: the play surface -->
+    <div id="session" hidden>
+      <div id="stage">
+      <!-- `preload` so playback starts quickly on the first reward. The frame
+           it decodes is deliberately NOT shown: see #curtain below.
+
+           TWO elements, used as a double buffer. Switching clips on a single
+           element means reassigning `src`, which tears down the media pipeline
+           and rebuilds it — an audible silence at every clip boundary. The
+           idle element decodes the next clip while this one plays, so a
+           boundary is a swap. See src/session.ts. -->
+      <video id="reward" playsinline preload="auto"></video>
+      <video id="reward-b" class="behind" playsinline preload="auto"></video>
+      <!--
+        Black cover over the video whenever a reward is not playing.
+
+        An earlier version left the paused frame on screen, on the reasoning
+        that a waiting cartoon builds anticipation. The specialist corrected
+        this (2026-07-26): for some children the still picture is *itself*
+        reinforcing, so leaving it up delivers a reward the child did not have
+        to make a sound for, and the contingency the protocol depends on comes
+        apart. Between rewards the screen must give nothing back.
+
+        A cover rather than hiding the video, so the decoder is never disturbed
+        mid-playback.
+      -->
+      <div id="curtain"></div>
+      </div>
+      <!--
+        Stage 2: four rewards at once, one per target sound. The child learns
+        by trial which sound opens which window (domain.md), so a cell's
+        position is fixed for the whole session.
+
+        Each cell carries its own curtain for the same reason the stage-1 one
+        exists — but whether idle cells show their first frame is a live
+        clinical question (four black squares are indistinguishable, a frozen
+        frame is itself reinforcing), so it is a setting rather than a
+        decision. See src/stage2.ts.
+      -->
+      <div id="grid" hidden>
+        <div class="cell">
+          <video playsinline preload="auto"></video>
+          <div class="cell-curtain"></div>
+        </div>
+        <div class="cell">
+          <video playsinline preload="auto"></video>
+          <div class="cell-curtain"></div>
+        </div>
+        <div class="cell">
+          <video playsinline preload="auto"></video>
+          <div class="cell-curtain"></div>
+        </div>
+        <div class="cell">
+          <video playsinline preload="auto"></video>
+          <div class="cell-curtain"></div>
+        </div>
+      </div>
+
+      <div id="adult-bar">
+        <!-- Hold to stop listening; release to resume. Deliberately at the
+             opposite end of the bar from «Завершить», because this one gets
+             grabbed fast and without looking, and a miss must not end the
+             session.
+
+             The confirm buttons sit next to it. Those two are the pair the
+             adult actually works during a session, and a hand resting on
+             «Засчитать» should not have to cross the bar to mute. The
+             adjacency was bought by moving the readouts right rather than by
+             moving the mute inward: the mute is fast because it is in the
+             corner (see #hold-mute), and a control that needs aiming would
+             lose exactly what this reordering is for. -->
+        <button id="hold-mute"></button>
+        <button class="primary" id="confirm"></button>
+        <!-- One confirm button per target at stage 2, built by main.ts: the
+             adult has to say *which* sound they are counting, and that press is
+             also the enrolment signal. -->
+        <span id="target-confirms"></span>
+        <!-- Forces the row split at stage 2 below 1600 px, and is
+             `display: none` everywhere else.
+             Empty and unlabelled on purpose: it is layout, so it must not reach
+             the accessibility tree. Flex has no break-before, which is the only
+             reason it is an element at all. -->
+        <span id="adult-bar-break" aria-hidden="true"></span>
+        <!-- The second split, and only on a phone: it puts «Завершить» a whole
+             row away from «Засчитать» instead of 6 px above it. Same reasons
+             for being an element as its neighbour above, and `display: none`
+             at every width but the one that needs it. -->
+        <span id="adult-bar-break-phone" aria-hidden="true"></span>
+        <!-- Sensitivity, reachable without ending the session — and the mute,
+             because its far-left end is "do not listen". One continuous
+             gesture rather than two taps, and the handle's position is the
+             state, so there is nothing to forget. Detection is all that stops:
+             the confirm buttons keep working, because an adult who has muted
+             is usually counting responses by hand. -->
+        <label id="session-sensitivity-label" for="session-sensitivity"></label>
+        <input type="range" id="session-sensitivity" min="0" max="100" value="50" />
+        <!-- The reward was not earned: stop it and take the count back. Next to
+             the sensitivity control on purpose — a false positive is a
+             sensitivity problem, and this is the pair the adult reaches for
+             when the app is firing on coughs and doors.
+
+             It is what the slider's right-hand overshoot now lands on. That
+             used to be «Завершить», which ends the session; this ends a reward
+             and can be answered with «Засчитать», so the worst outcome of a
+             mis-aim went from losing the session to losing one trial.
+
+             Disabled unless a reward is actually playing — see session.ts. A
+             disabled button keeps its width, so this cannot move the bar. -->
+        <button id="stop-reward" disabled></button>
+        <span id="session-listening"></span>
+        <span id="session-position"></span>
+        <span id="debug-readout"></span>
+        <!--
+          Raw matching numbers, for comparing the two match modes on a real
+          voice. Same register as the latency figures beside it: diagnostics
+          for the team, not a judgement about the child.
+
+          It shows the winning distance against the gate that distance is
+          being measured for, because which of the gate's two terms is winning
+          is what decides whether a near-miss is accepted, and no single
+          distance reveals it. Leaves with the PoC.
+        -->
+        <span id="match-readout"></span>
+        <!-- THE RIGHT-HAND CORNER: what the session *is*, and how it ends.
+             Everything before this is worked during a session; these three are
+             read during one and pressed once at the end of it, so they sit
+             together at the far end rather than among the controls.
+
+             They are carried there by the two readouts above, which are
+             `flex: 1 1 0` and swallow the whole of the bar's slack — so this
+             group starts wherever the slack runs out, which is the right edge.
+             Nothing here sets a margin to achieve that; if those readouts ever
+             stop growing, this group drifts back inward.
+
+             «этап» is which stage is running. Cheap where there is room, and it
+             removes a whole class of "the app is broken" that is really "the
+             wrong mode started" — but it is the first thing dropped when there
+             is not, at 900 px and below (see the media queries above).
+             «Засчитано» is the specialist's count — see the flex rules above
+             for why it is the one readout that never truncates, at any width.
+
+             «Завершить» must stay LAST in this markup. At stage 2 below 1600 px
+             the strip is two rows and every upper-row item shares one `order`,
+             so markup order is what keeps it at the far end of the upper row
+             instead of directly above a confirm button — a press aimed at
+             «Засчитать» and landing high would otherwise end the session. -->
+        <span id="session-stage"></span>
+        <span id="session-count"></span>
+        <button id="end-session"></button>
+      </div>
+    </div>
+
+  </body>
+</html>
